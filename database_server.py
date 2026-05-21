@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS transactions
 (
 id SERIAL PRIMARY KEY,
 sender_id INT ,
-receiver_id INT ,
+receiver_id INT NOT NULL,
 amount NUMERIC(15, 2) NOT NULL,
 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 FOREIGN  KEY (sender_id)
@@ -58,20 +58,107 @@ def get_all_customers(cur):
    result=cur.fetchall()
    clean_result=[dict(row) for row in(result)]
    print(clean_result)
-     
+def top_up_credit(cur,national_id,numberphone,pin,amount):
+    add="SELECT * FROM customers WHERE national_id=%s and numberphone=%s and pin=%s"
+    cur.execute(add,(national_id,numberphone,pin))
+    user=cur.fetchone()
+    if user:
+        receiver_id=user['id']
+        add_balance="INSERT INTO transactions (receiver_id,amount) VALUES (%s,%s)"
+        update_balance="UPDATE customers SET balance = balance + %s WHERE id = %s"
+        cur.execute (add_balance,(receiver_id,amount))
+        print(f"Successfully deposited {amount} to user ID {receiver_id}")
+        cur.execute(update_balance,(amount,receiver_id))
+        return True
+    else:
+        print("Error: Customer data is incorrect or does not exist.")
+        return False
+def transactions(cur):
+    show="SELECT * FROM transactions"
+    cur.execute(show)
+    result=cur.fetchall()
+    clean_result=[dict(row) for row in result]
+    print (clean_result)
+def transformation_money(cur,sender_id,sender_pin,receiver_phone,amount):
+    sender="SELECT balance FROM customers WHERE id=%s AND pin=%s"
+    cur.execute(sender,(sender_id,sender_pin))
+    result=cur.fetchone()
+    if not result:
+        print(f"error, id:{sender_id} Unknown with pin:{sender_pin}")
+        return False
+    result_balance=result['balance']
+    receiver="SELECT id FROM customers WHERE numberphone=%s"
+    cur.execute(receiver,(receiver_phone,))
+    receiver_id=cur.fetchone()
+    if not receiver_id:
+        print(f"sorry,{receiver_phone} it's not found")
+        return False
+    receiver_id_row=receiver_id['id']
+    if amount >= result_balance:
+        print(f"Sorry, the amount {amount} more than or equals:{result_balance}")
+        return False
+    transaction="INSERT INTO transactions (sender_id,receiver_id,amount) VALUES (%s,%s,%s)"
+    cur.execute(transaction,(sender_id,receiver_id_row,amount))
+    update_customers_sender="UPDATE customers SET balance = balance - %s WHERE id=%s"
+    cur.execute(update_customers_sender,(amount,sender_id))
+    update_customers_receiver="UPDATE customers SET balance = balance + %s WHERE id=%s"
+    cur.execute(update_customers_receiver,(amount,receiver_id_row))
+def get_user_transactions(cur,user_id,period):
+    if period=="day":
+        query=" SELECT * FROM transactions WHERE sender_id = %s OR receiver_id = %s AND timestamp >= CURRENT_DATE"
+    elif period=='week':
+        query="SELECT * FROM transactions WHERE sender_id = %s OR receiver_id = %s AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '7 days' "
+    elif period =='month':
+        query="SELECT * FROM transactions WHERE sender_id = %s OR receiver_id = %s  AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '1 month' "
+    else:
+        query=("SELECT * FROM transactions WHERE sender_id = %s OR receiver_id = %s ")
+    cur.execute(query,(user_id,user_id)) 
+    result=cur.fetchall()
+    clean_result=[dict(row) for row in result]
+    print(clean_result)
+    return True
+def get_manager_monthly_audit(cur):
+    query="""SELECT 
+    DATE(timestamp) AS audit_date,
+    COUNT(id) AS total_transactions,
+    SUM(amount) AS total_money_moved
+    FROM transactions WHERE timestamp >= CURRENT_TIMESTAMP - INTERVAL '1 month'
+    GROUP BY DATE(timestamp)
+    ORDER BY audit_date DESC;"""
+    cur.execute(query)
+    result=cur.fetchall()
+    clean_result=[dict(row) for row in result]
+    for day in clean_result:
+        print(f" DATE: {day['audit_date']} | operations: {day['total_transactions']} | total volume:${day["total_money_moved"]}")
+    return True
+def get_transactions_by_specific_date(cur, target_date):
+    query="""SELECT * FROM transactions WHERE DATE(timestamp)=%s
+        ORDER BY timestamp ASC;"""
+    cur.execute(query,[target_date])
+    result=cur.fetchall()
+    clean_result=[dict(row) for row in result]
+    print(clean_result)
+    print("_"*50 + "\n")
+    return clean_result
 try:
     conn=psycopg2.connect(**connection_params)
     cursor=conn.cursor(cursor_factory=RealDictCursor)
     print("connected successfully")
     creat_table(cursor)
-    create_an_account(cursor,"hasson","0993384496","012345","lma","hasan")
+    #create_an_account(cursor,"Ahmed","0981092427","543210","nha","greb")
+    #top_up_credit(cursor,"012345","0993384496",7364,100)
     get_all_customers(cursor)
+    #transactions(cursor)
+    #transformation_money(cursor,1,7364,"0981092427",100)
+    #get_user_transactions(cursor,1,"week")
+    get_manager_monthly_audit(cursor)
+    get_transactions_by_specific_date(cursor,"2026-5-20")
     conn.commit()
 except Exception as e:
     conn.rollback()
     if "customers_numberphone_key" in str(e):
         print("Sorry, this number is already registered.")
-    elif "customers_national_key" in str(e):
+    elif "customers_national_id_key" in str(e):
         print("Sorry,the national ID number is already registered")
     else:
         print(e)
