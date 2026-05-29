@@ -2,6 +2,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import random
 import os
+from auth_handler import create_access_token, verify_access_token
 import bcrypt
 from cryptography.fernet import Fernet
 BASE_DIR=os.path.dirname(os.path.abspath(__file__))
@@ -82,19 +83,41 @@ def encrypt_data(data:str) -> str:
 def decrypt_data(encrypted_data:str) -> str:
     return cipher_suite.decrypt(encrypted_data.encode("utf-8")).decode("utf-8")
 
-def create_an_account(cur,username,numberphone,national_id,mother_name,full_name,user_id,password):
-    employee="SELECT is_blocked, password_hash FROM employees WHERE id=%s"
-    cur.execute(employee,(user_id,))
+def check_permission(cur, token, required_role=None):
+    user_data=verify_access_token(token)
+    if not user_data:
+        return None
+    emp_id=user_data['employee_id']
+    emp_role=user_data['role']
+    cur.execute("SELECT is_blocked FROM employees WHERE id=%s",(emp_id,))
+    emp=cur.fetchone()
+    if not emp or emp['is_blocked']:
+        print("this account not found or blocked")
+        return None
+    if required_role and emp_role != required_role:
+        print("you are not Admin")
+        return None
+    return emp_id
+def login_employee(cur,plain_password,id_employee):
+    query="SELECT id,password_hash,role,is_blocked FROM employees WHERE id=%s"
+    cur.execute(query,(id_employee,))
     result=cur.fetchone()
     if not result:
-        print("the id not compatible with password")
-        return False
+        print("user not found")
+        return None
     if result['is_blocked']:
-        print("your are blocked")
+        print("you are blocked")
         return False
-    if not verify_password(password,result['password_hash']):
-        print("Sorry,the password is False")
-        return False
+    if not verify_password(plain_password,result['password_hash']):
+        print("your password is false")
+        return None
+    token=create_access_token(employee_id=result ['id'], role=result['role'])
+    return {"access_token":token, "token_tybe": "bearer"}
+#**************************************************************************************************************#  Hasson 🤫🤫😉
+def create_an_account(cur,token,username,numberphone,national_id,mother_name,full_name):
+    emp_id=check_permission(cur,token)
+    if not emp_id:
+        return None
     camputer_PIN=random.randint(1000,9999)
     blocked=[1111,1234,4321,9999]
     while camputer_PIN in blocked:
@@ -103,25 +126,14 @@ def create_an_account(cur,username,numberphone,national_id,mother_name,full_name
     encrypted_phone=encrypt_data(numberphone)
     encrypted_national_id=encrypt_data(national_id)
     account="INSERT INTO customers (username, pin, numberphone, national_id, mother_name, full_name, employee_id) VALUES (%s, %s, %s, %s, %s, %s, %s);"
-    cur.execute(account,(username, pin_hash, encrypted_phone, encrypted_national_id, mother_name, full_name, user_id))
+    cur.execute(account,(username, pin_hash, encrypted_phone, encrypted_national_id, mother_name, full_name, emp_id))
     print(f"your name: {username} and pin: {camputer_PIN} your number: {numberphone}")
     return {"your name":username,"your pin":camputer_PIN,"your number":numberphone}
-def create_employee(cur,full_name,password_hash,Admin_id,password_Admin):
+def create_employee(cur,token,full_name,password_hash):
+    admin_id=check_permission(cur,token,required_role="Admin")
+    if not admin_id:
+        return False
     employee_password_hash=hash_password(str(password_hash))
-    Admin="SELECT role, password_hash FROM employees WHERE id=%s"
-    cur.execute(Admin,(Admin_id,))
-    result=cur.fetchone()
-    if not result:
-        print("the ID is not available")
-        return False
-    Admin_role=result['role']
-    Admin_password=result['password_hash']
-    if Admin_role != "Admin":
-        print("Sorry, you are not Admin")
-        return False
-    if not verify_password(password_Admin, Admin_password):
-        print("your password is false")
-        return False
     employee="INSERT INTO employees (full_name,password_hash) VALUES (%s,%s)"
     cur.execute(employee,(full_name,employee_password_hash))
     print("user added successfully")
@@ -137,39 +149,36 @@ def get_all_customers(cur):
    except Exception:
        pass
    print(clean_result)
-def top_up_created(cur,national_id,pin,amount,id_employee,password):
-    employee="SELECT is_blocked, password_hash FROM employees WHERE id=%s"
-    cur.execute(employee,(id_employee,))
-    result=cur.fetchone()
+def top_up_created(cur,amount,token,national_id=None,id_account=None,number_phone=None):
+    if id_account and number_phone and national_id is None:
+        print("Select to search")
+        return None
+    emp_id=check_permission(cur,token)
+    if not emp_id:
+        return None
+    result=None
+    if national_id:
+        add="SELECT * FROM customers WHERE national_id=%s"
+        encrypted_national_id=encrypt_data(national_id)
+        cur.execute (add,(encrypted_national_id,))
+        result=cur.fetchone()
+    elif id_account:
+        add="SELECT * FROM customers WHERE id=%s"
+        cur.execute(add,(id_account,))
+        result=cur.fetchone()
+    elif number_phone:
+        add="select * FROM customers WHERE numberphone=%s"
+        cur.execute(add,(number_phone,))
+        result=cur.fetchone()
     if not result:
         print("user not found")
         return False
-    if result['is_blocked']:
-        print("you are blocked")
-        return False
-    if not verify_password(password,result['passwword_hash']):
-        print("you password is false")
-        return False
-    encrypted_national_id=encrypt_data(national_id)
-    add="SELECT * FROM customers WHERE national_id=%s"
-    cur.execute(add,(encrypted_national_id,))
-    user=cur.fetchone()
-    if user["is_active"]:
-        print("the account is blocked")
-        return False
-    if user:
-        if verify_password(str(pin),user['pin']):
-         receiver_id=user['id']
-         add_balance="INSERT INTO transactions (receiver_id,amount,employee_id) VALUES (%s,%s,%s)"
-         update_balance="UPDATE customers SET balance = balance + %s WHERE id = %s"
-         cur.execute (add_balance,(receiver_id,amount,id_employee))
-         print(f"Successfully deposited {amount} to user ID {receiver_id}")
-         cur.execute(update_balance,(amount,receiver_id))
-         return True
-        print("your password is false")
-        return False
-    print("Error: Customer data is incorrect or does not exist.")
-    return False
+    customer_id=result['id']
+    update_customer="UPDATE customers SET balance=balance+%s WHERE id=%s"
+    cur.execute(update_customer,(amount,customer_id))
+    insert="INSERT INTO transactions (receiver_id,employee_id,amount) VALUES (%s,%s,%s)"
+    cur.execute(insert,(customer_id,emp_id,amount))
+    return True
 def transactions(cur):
     show="SELECT * FROM transactions"
     cur.execute(show)
@@ -185,19 +194,10 @@ def show_employee(cur):
         return True
     print("no one her")
     return False
-def transformation_money(cur,sender_id,sender_pin,receiver_phone,amount,employee_id,password):
-    employee="SELECT is_blocked, password_hash FROM employees WHERE id=%s"
-    cur.execute(employee,(employee_id,))
-    result=cur.fetchone()
-    if not result:
-        print("user not found")
-        return False
-    if result['is_blocked']:
-        print("the password is blocked")
-        return False
-    if not verify_password(password,result['password_hash']):
-        print("the password is false")
-        return False
+def transformation_money(cur,sender_id,amount,sender_pin,token,receiver_phone=None,recieiver_id=None,national_receiver=None):
+    emp_id=check_permission(cur,token)
+    if not emp_id:
+        return None
     sender="SELECT balance, pin, is_active FROM customers WHERE id=%s"
     cur.execute(sender,(sender_id,))
     sender_result=cur.fetchone()
@@ -209,11 +209,20 @@ def transformation_money(cur,sender_id,sender_pin,receiver_phone,amount,employee
         return False
     result_balance=sender_result['balance']
     encrypted_receiver_phone=encrypt_data(receiver_phone)
-    receiver="SELECT id, is_active FROM customers WHERE numberphone=%s"
-    cur.execute(receiver,(encrypted_receiver_phone,))
-    receiver_row=cur.fetchone()
-    if not receiver_row:
-        print(f"sorry,{receiver_phone} it's not found")
+    receiver_row=None
+    if receiver_phone:
+        receiver="SELECT id, is_active FROM customers WHERE numberphone=%s"
+        cur.execute(receiver,(encrypted_receiver_phone,))
+        receiver_row=cur.fetchone()
+    elif recieiver_id:
+        receiver="SELECT id, is_active FROM customers WHERE id=%s"
+        cur.execute(receiver,(recieiver_id,))
+        receiver_row=cur.fetchone()
+    elif national_receiver:
+        receiver="SELECT id, is_active FROM customers WHERE national_id=%s"
+        cur.execute(receiver,(national_receiver,))
+    else:
+        print("sorry user not found")
         return False
     if receiver_row["is_active"]:
         print("the account is blocked")
@@ -222,27 +231,32 @@ def transformation_money(cur,sender_id,sender_pin,receiver_phone,amount,employee
     if amount >= result_balance:
         print(f"Sorry, the amount {amount} more than or equals:{result_balance}")
         return False
-    transaction="INSERT INTO transactions (sender_id,receiver_id,amount) VALUES (%s,%s,%s)"
-    cur.execute(transaction,(sender_id,receiver_id_row,amount))
+    transaction="INSERT INTO transactions (sender_id,receiver_id,amount,employee_id) VALUES (%s,%s,%s,%s)"
+    cur.execute(transaction,(sender_id,receiver_id_row,amount,emp_id))
     update_customers_sender="UPDATE customers SET balance = balance - %s WHERE id=%s"
     cur.execute(update_customers_sender,(amount,sender_id))
     update_customers_receiver="UPDATE customers SET balance = balance + %s WHERE id=%s"
     cur.execute(update_customers_receiver,(amount,receiver_id_row))
-def get_user_transactions(cur,user_id,period):
+    return True
+def get_user_transactions(cur,user_id,period,token):
+    emp_id=check_permission(cur,token,required_role="Admin")
+    if not emp_id:
+        return None
     if period=="day":
         query=" SELECT * FROM transactions WHERE sender_id = %s OR receiver_id = %s AND timestamp >= CURRENT_DATE"
     elif period=='week':
         query="SELECT * FROM transactions WHERE sender_id = %s OR receiver_id = %s AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '7 days' "
     elif period =='month':
         query="SELECT * FROM transactions WHERE sender_id = %s OR receiver_id = %s  AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '1 month' "
-    else:
-        query=("SELECT * FROM transactions WHERE sender_id = %s OR receiver_id = %s ")
     cur.execute(query,(user_id,user_id)) 
     result=cur.fetchall()
     clean_result=[dict(row) for row in result]
     print(clean_result)
     return True
-def get_manager_monthly_audit(cur):
+def get_manager_monthly_audit(cur,token):
+    emp_id=check_permission(cur,token,required_role="Admin")
+    if not emp_id:
+        return None
     query="""SELECT 
     DATE(timestamp) AS audit_date,
     COUNT(id) AS total_transactions,
@@ -256,23 +270,10 @@ def get_manager_monthly_audit(cur):
     for day in clean_result:
         print(f" DATE: {day['audit_date']} | operations: {day['total_transactions']} | total volume:${day["total_money_moved"]}")
     return True
-def delete_employee(cur,employee_id,Admin_id,password):
-    Admin="SELECT role, password_hash FROM employees WHERE id=%s"
-    cur.execute(Admin,(Admin_id,))
-    result=cur.fetchone()
-    if not result:
-        print("user not found")
-        return False
-    if result['role'] != "Admin":
-        print("you are not Admin")
-        return False
-    if not verify_password(password,result['password_hash']):
-        print("password is false")
-        return False
-    employee="DELETE FROM employees WHERE id=%s"
-    cur.execute(employee,(employee_id,))
-    return True
-def balance_withdrawal(cur,id_customer,pin,national_id,amount):
+def balance_withdrawal(cur,token,id_customer,pin,national_id,amount):
+    emp_id=check_permission(cur,token)
+    if not emp_id:
+        return None
     customer="SELECT pin, is_active, national_id, balance FROM customers WHERE id=%s"
     cur.execute(customer,(id_customer,))
     result=cur.fetchone()
@@ -285,17 +286,20 @@ def balance_withdrawal(cur,id_customer,pin,national_id,amount):
     if not verify_password(pin,result['pin']):
         print("your PIN is false")
         return False
-    if encrypt_data(national_id)!=result['national_id']:
+    if national_id and encrypt_data(national_id)!=result['national_id']:
         print("the national_id is False")
         return False
     if amount > result['balance']:
-        print(" the amount more than balance")
+        print(f"the amount:{amount} more than balance:{result['balance']}")
         return False
     update="UPDATE customers SET balance=balance-%s WHERE id=%s"
     cur.execute(update,(amount,id_customer))
     print("update successfully")
     return True
-def ban(cur,employee_id):
+def ban(cur,employee_id,token):
+    emp_id=check_permission(cur,token,required_role="Admin")
+    if not emp_id:
+        return None
     employee="SELECT role, is_blocked FROM employees WHERE id=%s"
     cur.execute(employee,(employee_id,))
     result=cur.fetchone()
@@ -308,7 +312,10 @@ def ban(cur,employee_id):
     update_bloked="UPDATE employees SET is_bloked=%s WHERE id=%s"
     cur.execute(update_bloked,(True,employee_id))
     return True
-def Unblock(cur,employee_id):
+def Unblock(cur,token,employee_id):
+    emp_id=check_permission(cur,token,required_role="Admin")
+    if not emp_id:
+        return None
     employee="SELECT is_blocked FROM employees WHERE id=%s"
     cur.execute(employee,(employee_id,))
     result=cur.fetchone()
@@ -321,7 +328,10 @@ def Unblock(cur,employee_id):
     employee_update="UPDATE employees SET is_blocked=%s WHERE id=%s"
     cur.execute(employee_update,(False,employee_id))
     return True
-def get_transactions_by_specific_date(cur, target_date):
+def get_transactions_by_specific_date(cur, target_date,token):
+    emp_id=check_permission(cur,token,required_role="Admin")
+    if not emp_id:
+        return None
     query="""SELECT * FROM transactions WHERE DATE(timestamp)=%s
         ORDER BY timestamp ASC;"""
     cur.execute(query,[target_date])
